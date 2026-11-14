@@ -1,7 +1,10 @@
-# SmartScan 运行与开发依赖（本次验证：Python 3.11 / Windows）
+# SmartScan 运行与开发依赖（按 Python 版本选择 Qt 构建）
 numpy>=2.0,<3
 opencv-python-headless>=4.10,<5
 Pillow>=11,<13
-# 本机 6.12.0 在预览窗口退出时崩溃，固定本次验证通过的 Qt 版本。
-PySide6==6.9.3
+# PySide6 6.12.0 在预览窗口退出时会崩溃；6.9.3 在 Python 3.11~3.13 验证通过，
+# 但它声明 Requires-Python >=3.9,<3.14，Python 3.14 上没有任何可安装的 wheel。
+# 因此 3.14 改用 6.10.1 起的新构建，固定 6.11.3（避开已知崩溃的 6.12.0）。
+PySide6==6.9.3; python_version < "3.14"
+PySide6==6.11.3; python_version >= "3.14"
 pytest>=8,<10

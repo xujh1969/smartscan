@@ -9,7 +9,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-python -c "import PySide6, cv2, PIL, numpy; assert PySide6.__version__ == '6.9.3'" >nul 2>&1
+python -c "import PySide6, cv2, PIL, numpy, sys; need = '6.11.3' if sys.version_info >= (3, 14) else '6.9.3'; assert PySide6.__version__ == need" >nul 2>&1
 if errorlevel 1 (
   echo 正在安装或校准运行依赖，请保持联网...
   python -m pip install -r requirements.txt
