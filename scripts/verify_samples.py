@@ -21,8 +21,8 @@ from smartscan.metadata import read_metadata  # noqa: E402
 from smartscan.models import BatchConfig  # noqa: E402
 from smartscan.pipeline import run  # noqa: E402
 
-SAMPLE_DIR = Path.home() / "Pictures" / "扫描"
-OUTPUT_DIR = ROOT / "verify_output"
+SAMPLE_DIR = ROOT / "扫描"
+OUTPUT_DIR = ROOT / "verify_output" / "photos"
 REPORT_PATH = ROOT / "verify_output_report.json"
 INDEX_PATH = ROOT / "verify_index.png"
 SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
@@ -179,6 +179,10 @@ def main() -> int:
         "ok_count": len(result.ok),
         "failed": [[str(p), reason] for p, reason in result.failed],
         "review": [str(p) for p in result.review],
+        "source_counts": {
+            path.name: sum(item.source == str(path.resolve()) for item in result.ok)
+            for path in files
+        },
         "results": [
             {
                 "file": item.path.name,

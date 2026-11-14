@@ -63,3 +63,21 @@ def test_over_tilt_photos_are_exported_and_flagged_not_silently_dropped(tmp_path
     assert len(result.ok) == 1
     assert "low_confidence" in result.ok[0].flags
     assert result.review == [source]
+
+
+def test_completed_sources_report_skips_but_not_failed_or_unprocessed_sources(tmp_path):
+    first = make_scan_file(tmp_path / "first.png")
+    second = make_scan_file(tmp_path / "second.png")
+    calls = 0
+
+    def cancel():
+        nonlocal calls
+        calls += 1
+        return calls > 1
+
+    output = tmp_path / "out"
+    result = run(BatchConfig([first, second], output), cancel=cancel)
+    assert result.completed == [first]
+    repeated = run(BatchConfig([first, tmp_path / "missing.png"], output))
+    assert repeated.completed == [first]
+    assert not repeated.ok and len(repeated.failed) == 1

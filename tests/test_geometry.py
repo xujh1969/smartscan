@@ -1,10 +1,22 @@
+import cv2
+import pytest
+
 from smartscan.geometry import (
+    is_rectangle,
     largest_inscribed_rect,
     order_quad,
     quad_bbox,
     rotate_points,
     tilt_angle,
 )
+
+
+@pytest.mark.parametrize("rect", [
+    ((7000, 9000), (1000, 1500), 25.4),
+    ((4000, 6000), (500, 700), 0.6),
+])
+def test_large_scan_rotation_roundoff_still_counts_as_rectangle(rect):
+    assert is_rectangle(cv2.boxPoints(rect).tolist())
 
 
 def test_tilt_angle_of_rotated_square():

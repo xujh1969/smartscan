@@ -69,6 +69,7 @@ class BatchConfig:
     max_tilt_deg: float = 20.0
     fill_mode: str = "background"
     min_area_ratio: float = 0.01
+    require_review: bool = False
 
     def __post_init__(self) -> None:
         if not self.source_files:
@@ -86,3 +87,4 @@ class BatchResult:
     ok: list[SplitResult] = field(default_factory=list)
     failed: list[tuple[Path, str]] = field(default_factory=list)
     review: list[Path] = field(default_factory=list)
+    completed: list[Path] = field(default_factory=list)

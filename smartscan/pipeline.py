@@ -12,12 +12,13 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .detection import detect_quads, estimate_background, resolve_occlusion
+from .detection import DETECTOR_VERSION, detect_quads, estimate_background, resolve_occlusion
 from .metadata import build_text_chunk, read_metadata, write_png
 from .models import BatchConfig, BatchResult, Flags, OrientationState, PhotoQuad, SplitResult
 from .naming import content_hash, find_existing, next_name, reserve_name
 from .orientation import should_auto_rotate, vote
 from .rotation import apply_state
+from .review import load_review
 from .split import deskew_and_crop
 
 Progress = Callable[[int, int, str], None]
@@ -54,10 +55,13 @@ def _load_existing(output_dir: Path) -> list[dict]:
             meta = read_metadata(png)
         except Exception:
             continue
-        if meta.get("source") and meta.get("digest"):
+        if (meta.get("source") and meta.get("digest")
+                and meta.get("detector_version") == DETECTOR_VERSION):
             metas.append(
-                {"path": str(png), "source": meta["source"], "digest": meta["digest"]}
+                {"path": str(png), "source": meta["source"], "digest": meta["digest"],
+                 "review_revision": meta.get("review_revision", "")}
             )
+            metas[-1]["review_crop_index"] = meta.get("review_crop_index", "")
     return metas
 
 
@@ -103,6 +107,8 @@ def _save_photo(
     extra_flags: list[str],
     dpi: tuple[float, float],
     icc: bytes | None,
+    review_revision: str = "",
+    review_crop_index: int | None = None,
 ) -> SplitResult:
     target = reserve_name(output_dir, next_name(index, digest))
     text = build_text_chunk(
@@ -115,6 +121,11 @@ def _save_photo(
         flags=quad.flags() + extra_flags,
         confidence=quad.confidence,
     )
+    text["detector_version"] = DETECTOR_VERSION
+    text["detection_method"] = "reviewed" if review_revision else "automatic"
+    text["review_revision"] = review_revision
+    if review_crop_index is not None:
+        text["review_crop_index"] = str(review_crop_index)
     write_png(target, Image.fromarray(crop), dpi=dpi, icc=icc, text=text)
     return SplitResult(
         path=target,
@@ -157,19 +168,38 @@ def run(
         try:
             digest = content_hash(source)
             source_key = str(source.resolve())
-            if find_existing(existing, source_key, digest):
+            reviewed = load_review(source)
+            if config.require_review and reviewed is None:
+                raise ValueError("原图已变化或缺少已保存的裁切框，请重新预览校正")
+            revision = reviewed.revision if reviewed is not None else ""
+            matching = [meta for meta in existing if meta["review_revision"] == revision]
+            completed = {
+                int(meta["review_crop_index"]) for meta in matching
+                if meta["source"] == source_key and meta["digest"] == digest
+                and meta["review_crop_index"].isdecimal()
+            }
+            complete = (completed.issuperset(range(len(reviewed.points))) if reviewed is not None
+                        else bool(find_existing(matching, source_key, digest)))
+            if complete:
+                result.completed.append(source)
                 report(position, total, "skipped")
                 continue
 
             image, dpi, icc = _read_source(source)
             background = estimate_background(image)
-            quads = resolve_occlusion(
+            quads = (reviewed.quads() if reviewed is not None else resolve_occlusion(
                 detect_quads(image, background, min_area_ratio=config.min_area_ratio)
-            )
+            ))
             if not quads:
-                result.review.append(source)
-                report(position, total, "review")
+                if reviewed is None:
+                    result.review.append(source)
+                else:
+                    result.completed.append(source)
+                report(position, total, "review" if reviewed is None else "done")
                 continue
+
+            if any(quad.status != "ok" or quad.confidence < 0.6 for quad in quads):
+                result.review.append(source)
 
             over_tilt = False
             for quad in quads:
@@ -179,7 +209,9 @@ def run(
             if over_tilt and source not in result.review:
                 result.review.append(source)
 
-            for quad in quads:
+            for crop_index, quad in enumerate(quads):
+                if reviewed is not None and crop_index in completed:
+                    continue
                 crop = deskew_and_crop(
                     image,
                     quad,
@@ -187,7 +219,12 @@ def run(
                     visible_mask=quad.visible_mask,
                     fill_mode=config.fill_mode,
                 )
-                oriented, rotation, orientation, extra_flags = _auto_orientation(crop)
+                if reviewed is not None:
+                    rotation = reviewed.rotations[crop_index]
+                    oriented = apply_state(crop, rotation)
+                    orientation, extra_flags = OrientationState.MANUAL, []
+                else:
+                    oriented, rotation, orientation, extra_flags = _auto_orientation(crop)
                 index += 1
                 result.ok.append(
                     _save_photo(
@@ -202,8 +239,11 @@ def run(
                         extra_flags,
                         dpi,
                         icc,
+                        revision,
+                        crop_index if reviewed is not None else None,
                     )
                 )
+            result.completed.append(source)
             report(position, total, "done")
         except Exception as exc:
             result.failed.append((source, str(exc)))

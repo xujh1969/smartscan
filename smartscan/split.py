@@ -11,7 +11,7 @@ import math
 import cv2
 import numpy as np
 
-from .geometry import largest_inscribed_rect, quad_bbox
+from .geometry import is_rectangle, largest_inscribed_rect, quad_bbox
 from .models import PhotoQuad
 
 Background = tuple[int, int, int]
@@ -36,6 +36,8 @@ def deskew_and_crop(
     arr = np.asarray(image)
     height, width = arr.shape[:2]
     points = quad.ordered()
+    if not is_rectangle(points):
+        fill_mode = "inset"
     cx = sum(p[0] for p in points) / 4.0
     cy = sum(p[1] for p in points) / 4.0
     bg = tuple(int(v) for v in background[:3])

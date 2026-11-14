@@ -9,9 +9,9 @@ if errorlevel 1 (
   exit /b 1
 )
 
-python -c "import PySide6, cv2, PIL, numpy" >nul 2>&1
+python -c "import PySide6, cv2, PIL, numpy; assert PySide6.__version__ == '6.9.3'" >nul 2>&1
 if errorlevel 1 (
-  echo 首次启动：正在安装依赖，请保持联网...
+  echo 正在安装或校准运行依赖，请保持联网...
   python -m pip install -r requirements.txt
   if errorlevel 1 (
     echo 依赖安装失败，请手动执行：python -m pip install -r requirements.txt

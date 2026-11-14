@@ -1,22 +1,16 @@
-"""Two-stage detection for tightly packed, unbordered photos.
-
-Stage 1: estimate the scanner background and cut out the photo cluster.
-Stage 2: at original resolution, find SEAMS by edge projection. A real photo
-contains many internal colour blocks, so clustering pixels by tone is wrong;
-only long straight edges that span most of a photo's width/height are seams.
-Each cell between seams is fitted with a rotated rectangle (inner edge of a
-shadow line), and occlusion is inferred from contour fill ratio.
-"""
+"""Paper-boundary detection with conservative geometric fallback and review flags."""
 
 from __future__ import annotations
 
 import cv2
 import numpy as np
 
+from .boundaries import paper_regions, trim_to_solid_body
 from .geometry import order_quad, quad_bbox, shrink_quad, tilt_angle
 from .models import Flags, PhotoQuad
 
 Background = tuple[int, int, int]
+DETECTOR_VERSION = "paper-boundaries-1"
 _KERNEL = np.ones((3, 3), dtype=np.uint8)
 _MIN_FILL_FOR_COMPLETE = 0.92
 _MIN_FOREGROUND_AREA = 100
@@ -32,10 +26,12 @@ def estimate_background(image: np.ndarray) -> Background:
     height, width = arr.shape[:2]
     k = max(2, min(height, width) // 20)
     patches = [arr[:k, :k], arr[:k, -k:], arr[-k:, :k], arr[-k:, -k:]]
-    pixels = np.concatenate(
-        [p.reshape(-1, arr.shape[2] if arr.ndim == 3 else 1) for p in patches]
-    )
-    median = np.median(pixels, axis=0)
+    # A print can occupy three corners. Mixing all four patches then estimates
+    # the print colour rather than the light scanner lid. Prefer the lightest
+    # corner's median, which is robust to dust and thin scanner rails.
+    medians = [np.median(p.reshape(-1, arr.shape[2] if arr.ndim == 3 else 1), axis=0)
+               for p in patches]
+    median = max(medians, key=lambda value: float(np.mean(value)))
     if arr.ndim == 2:
         value = int(median[0])
         return (value, value, value)
@@ -54,7 +50,7 @@ def find_photo_cluster(
         difference = np.max(np.abs(arr[..., :3].astype(np.int16) - bg), axis=2)
     mask = (difference > tolerance).astype(np.uint8) * 255
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, _KERNEL, iterations=1)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, _KERNEL, iterations=2)
+    # Closing here bridges the narrow gutters between independent prints.
     return mask
 
 
@@ -133,41 +129,11 @@ def _boundaries(scores: np.ndarray, length: int) -> list[int]:
     return [min(max(0, value), length) for value in merged]
 
 
-def trim_to_solid_body(
-    cell: np.ndarray, sparse: float = 0.25, min_span_ratio: float = 0.15
-) -> tuple[np.ndarray, tuple[int, int]]:
-    """Trim only LONG, nearly-empty head/tail bands (scanner edge lines).
-
-    A tilted photo also has a few sparse rows at its corners; those are short
-    and must be kept or the tilt is lost. Only a long band with <25% foreground
-    is a connected thin line rather than photo content.
-    """
-    height, width = cell.shape[:2]
-    row_fill = np.count_nonzero(cell, axis=1) / max(1, width)
-    column_fill = np.count_nonzero(cell, axis=0) / max(1, height)
-
-    def bounds(fill: np.ndarray, length: int) -> tuple[int, int]:
-        low = fill < sparse
-        head = 0
-        while head < length and low[head]:
-            head += 1
-        tail = length
-        while tail > head and low[tail - 1]:
-            tail -= 1
-        minimum = max(1, int(min_span_ratio * length))
-        start = head if head >= minimum else 0
-        end = tail if length - tail >= minimum else length
-        return start, end
-
-    y0, y1 = bounds(row_fill, height)
-    x0, x1 = bounds(column_fill, width)
-    return np.ascontiguousarray(cell[y0:y1, x0:x1]), (x0, y0)
-
 
 def _fit_quad(
     cell: np.ndarray, offset: tuple[int, int], shape: tuple[int, int]
 ) -> PhotoQuad | None:
-    body, (dx, dy) = trim_to_solid_body(cell)
+    body, (dx, dy) = trim_to_solid_body(cell, min_span_ratio=0.03)
     contours, _ = cv2.findContours(
         body, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
@@ -189,8 +155,9 @@ def _fit_quad(
     )
 
     visible = np.zeros(shape, dtype=np.uint8)
-    body_h, body_w = body.shape[:2]
-    visible[oy : oy + body_h, ox : ox + body_w] = body
+    # The foreground mask is only a locator. Its holes include legitimate pale
+    # image content, so retain the complete external contour when exporting.
+    cv2.drawContours(visible, [global_contour], -1, 255, cv2.FILLED)
     return PhotoQuad(
         points=inner,
         tilt_deg=tilt_angle(inner),
@@ -208,6 +175,16 @@ def _split_component(
     min_area_ratio: float,
 ) -> list[PhotoQuad]:
     x, y, width, height = bbox
+    whole = _fit_quad(component[y:y + height, x:x + width], (x, y), component.shape)
+    if whole is not None:
+        sides = np.linalg.norm(np.roll(np.asarray(whole.points), -1, axis=0)
+                               - np.asarray(whole.points), axis=1)
+        if whole.fill_ratio > 0.96 and max(sides) / max(1.0, min(sides)) < 1.9:
+            # A long scene edge cannot, on its own, split an intact print.
+            if max(sides) * min(sides) > component.size * 0.55:
+                whole.status = Flags.UNCERTAIN
+                whole.confidence = min(whole.confidence, 0.5)
+            return [whole]
     rows, columns = _edge_scores(gray, component, bbox)
     row_bounds = _boundaries(rows, height)
     column_bounds = _boundaries(columns, width)
@@ -243,6 +220,33 @@ def detect_quads(
     background: Background,
     min_area_ratio: float = 0.01,
 ) -> list[PhotoQuad]:
+    physical = paper_regions(np.asarray(image), background)
+    if len(physical) > 1 or physical and physical[0].status == "ok":
+        arr = np.asarray(image)
+        gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY) if arr.ndim == 3 else arr
+        separated = []
+        cluster = None
+        for quad in physical:
+            points = np.asarray(quad.points)
+            sides = np.linalg.norm(np.roll(points, -1, axis=0) - points, axis=1)
+            if quad.status != "ok" and quad.fill_ratio > 0.99 and max(sides) > 1.9 * min(sides):
+                if cluster is None:
+                    cluster = find_photo_cluster(image, background)
+                x0, y0, x1, y1 = quad.bbox()
+                x, y = max(0, int(x0)), max(0, int(y0))
+                right, bottom = min(arr.shape[1], int(x1) + 1), min(arr.shape[0], int(y1) + 1)
+                children = _split_component(gray, cluster, (x, y, right - x, bottom - y), min_area_ratio)
+                if len(children) > 1:
+                    for child in children:
+                        child.status = Flags.UNCERTAIN
+                        child.confidence = min(child.confidence, 0.5)
+                    separated.extend(children)
+                    continue
+            separated.append(quad)
+        largest = max(cv2.contourArea(np.asarray(q.points, np.float32)) for q in separated)
+        physical = [q for q in separated
+                    if cv2.contourArea(np.asarray(q.points, np.float32)) >= min_area_ratio * largest]
+        return sorted(physical, key=lambda q: (q.bbox()[1], q.bbox()[0]))
     cluster = find_photo_cluster(image, background)
     if not np.any(cluster):
         return []
@@ -257,12 +261,17 @@ def detect_quads(
     quads: list[PhotoQuad] = []
     for index in range(1, count):
         x, y, width, height, area = (int(stats[index, k]) for k in range(5))
-        if area < _MIN_FOREGROUND_AREA:
+        if area < max(_MIN_FOREGROUND_AREA, cluster.size * 0.001):
             continue
         component = (labels == index).astype(np.uint8) * 255
         quads.extend(
             _split_component(gray, component, (x, y, width, height), min_area_ratio)
         )
+    if len(quads) > 1:
+        # Straight-line fallback lacks paper evidence. Retain the candidates,
+        # but never silently present these ambiguous cuts as high confidence.
+        for quad in quads:
+            quad.confidence = min(quad.confidence, 0.55)
     return sorted(
         quads, key=lambda q: (quad_bbox(q.points)[1], quad_bbox(q.points)[0])
     )

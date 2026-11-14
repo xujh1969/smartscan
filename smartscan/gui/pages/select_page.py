@@ -62,6 +62,9 @@ class SelectPage(QtWidgets.QWidget):
         self.fill_combo.addItem("透明四角", "alpha")
         self.start_button = QtWidgets.QPushButton("开始拆分处理")
         self.start_button.setEnabled(False)
+        self.review_button = QtWidgets.QPushButton("预览、校正裁切框，再批量裁切…")
+        self.review_button.setEnabled(False)
+        self.last_review_dialog = None
 
         file_buttons = QtWidgets.QHBoxLayout()
         for button in (self.add_button, self.remove_button, self.clear_button):
@@ -80,12 +83,14 @@ class SelectPage(QtWidgets.QWidget):
         settings_row.addStretch(1)
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.addWidget(QtWidgets.QLabel("① 选择一批扫描图（可跨目录、可拖拽）"))
+        layout.addWidget(QtWidgets.QLabel("① 添加扫描图（可一次多选；每张扫描图可包含多张照片）"))
         layout.addLayout(file_buttons)
         layout.addWidget(self.file_list, stretch=1)
         layout.addWidget(QtWidgets.QLabel("② 指定结果目录（只输出平铺 PNG）"))
         layout.addLayout(output_row)
         layout.addLayout(settings_row)
+        layout.addWidget(self.review_button)
+        layout.addWidget(QtWidgets.QLabel("已保存的裁切框会优先使用；原始扫描件保持不变。"))
         layout.addWidget(self.start_button)
 
         self.add_button.clicked.connect(self._pick_files)
@@ -94,6 +99,7 @@ class SelectPage(QtWidgets.QWidget):
         self.output_button.clicked.connect(self._pick_output)
         self.output_edit.textChanged.connect(lambda _: self._update_start())
         self.start_button.clicked.connect(self._emit_batch)
+        self.review_button.clicked.connect(self._review)
 
     def add_files(self, paths: list[str]) -> None:
         for path in paths:
@@ -109,11 +115,12 @@ class SelectPage(QtWidgets.QWidget):
         self.start_button.setEnabled(
             bool(self.files and self.output_edit.text().strip())
         )
+        self.review_button.setEnabled(self.start_button.isEnabled())
 
     def _pick_files(self) -> None:
         selected, _ = QtWidgets.QFileDialog.getOpenFileNames(
             self,
-            "选择扫描图",
+            "选择扫描图（可按 Ctrl+A 全选或 Ctrl 多选）",
             "",
             "图像 (*.png *.jpg *.jpeg *.tif *.tiff *.bmp);;全部 (*.*)",
         )
@@ -138,11 +145,26 @@ class SelectPage(QtWidgets.QWidget):
         if folder:
             self.set_output_dir(folder)
 
-    def _emit_batch(self) -> None:
+    def _review(self):
+        from smartscan.gui.review_dialog import ReviewDialog
+
+        if self.last_review_dialog is not None and self.last_review_dialog.isVisible():
+            self.last_review_dialog.raise_()
+            return
+        dialog = ReviewDialog([Path(path) for path in self.files], self,
+                              fill_mode=self.fill_combo.currentData())
+        dialog.export_requested.connect(self._emit_batch)
+        self.last_review_dialog = dialog
+        dialog.show()
+
+    def _emit_batch(self, sources=None) -> None:
+        # QPushButton.clicked supplies a bool; the review dialog supplies paths.
+        files = sources if isinstance(sources, list) else [Path(p) for p in self.files]
         config = BatchConfig(
-            source_files=[Path(p) for p in self.files],
+            source_files=files,
             output_dir=Path(self.output_edit.text().strip()),
             max_tilt_deg=float(self.tilt_spin.value()),
             fill_mode=self.fill_combo.currentData(),
+            require_review=isinstance(sources, list),
         )
         self.batch_requested.emit(config)

@@ -39,6 +39,9 @@ class ProgressPage(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.worker: BatchWorker | None = None
+        self._cancel_pending = False
+        self._result = None
+        self._error = None
 
         self.progress_bar = QtWidgets.QProgressBar()
         self.stage_label = QtWidgets.QLabel("等待开始")
@@ -56,18 +59,26 @@ class ProgressPage(QtWidgets.QWidget):
         self.cancel_button.clicked.connect(self.cancel_clicked)
 
     def start(self, config) -> None:
+        if self.worker is not None and self.worker.isRunning():
+            return
         self.log.clear()
+        self._cancel_pending = False
+        self._result = self._error = None
+        self.cancel_button.setEnabled(True)
         self.progress_bar.setValue(0)
         self.worker = BatchWorker(config)
         self.worker.progressed.connect(self._on_progress)
         self.worker.finished_batch.connect(self._on_done)
         self.worker.errored.connect(self._on_error)
+        self.worker.finished.connect(self._worker_finished)
         self.worker.start()
 
     def cancel_clicked(self) -> None:
-        if self.worker is not None:
+        if self.worker is not None and self.worker.isRunning():
+            self._cancel_pending = True
             self.worker.request_cancel()
-        self.cancelled.emit()
+            self.cancel_button.setEnabled(False)
+            self.stage_label.setText("正在完成当前扫描图的保存，然后安全停止…")
 
     def _on_progress(self, done: int, total: int, stage: str) -> None:
         self.progress_bar.setMaximum(max(1, total))
@@ -76,12 +87,21 @@ class ProgressPage(QtWidgets.QWidget):
         self.log.appendPlainText(f"{done}/{total} · {stage}")
 
     def _on_done(self, result) -> None:
+        self._result = result
+        state = "已停止" if self._cancel_pending else "完成"
         self.log.appendPlainText(
-            f"完成：成功 {len(result.ok)} 张，失败 {len(result.failed)} 个文件，"
+            f"{state}：成功 {len(result.ok)} 张，失败 {len(result.failed)} 个文件，"
             f"待复核 {len(result.review)} 个文件"
         )
-        self.batch_finished.emit(result)
 
     def _on_error(self, message: str) -> None:
+        self._error = message
         self.log.appendPlainText(f"错误：{message}")
-        self.cancelled.emit()
+
+    def _worker_finished(self):
+        if self._error is not None or self._result is None:
+            self.cancelled.emit()
+        else:
+            self.batch_finished.emit(self._result)
+            if self._cancel_pending:
+                self.cancelled.emit()

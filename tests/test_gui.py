@@ -30,7 +30,7 @@ def test_main_window_has_three_pages_and_start_disabled(qapp):
     window.close()
 
 
-def test_select_page_enables_start_when_files_and_output_are_set(qapp, tmp_path):
+def test_select_page_enables_start_when_files_and_output_are_set(qapp, tmp_path, monkeypatch):
     window = MainWindow()
     source = tmp_path / "a.tif"
     source.write_bytes(b"scan")
@@ -39,6 +39,7 @@ def test_select_page_enables_start_when_files_and_output_are_set(qapp, tmp_path)
     window.select_page.set_output_dir(str(tmp_path))
 
     assert window.select_page.start_button.isEnabled() is True
+    monkeypatch.setattr(window, "_confirm_unfinished_exit", lambda *args: True)
     window.close()
 
 

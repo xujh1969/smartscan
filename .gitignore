@@ -17,6 +17,7 @@ dist/
 .idea/
 
 # Local verification artefacts (may contain private photos)
+/扫描/
 verify_output/
 verify_index.png
 verify_output_report.json

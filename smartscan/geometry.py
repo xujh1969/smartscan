@@ -30,8 +30,20 @@ def quad_bbox(quad: Quad) -> tuple[float, float, float, float]:
     return min(xs), min(ys), max(xs), max(ys)
 
 
+def is_rectangle(quad: Quad) -> bool:
+    """Recognize four right angles, including rotated rectangles."""
+    pts = order_quad(quad)
+    edges = [(pts[(i + 1) % 4][0] - pts[i][0], pts[(i + 1) % 4][1] - pts[i][1])
+             for i in range(4)]
+    # OpenCV returns float32 corners; their rounding grows with image coordinates.
+    roundoff = max(abs(value) for point in pts for value in point) * 2 ** -21
+    return all(abs(a[0] * b[0] + a[1] * b[1]) <=
+               1e-6 * math.hypot(*a) * math.hypot(*b) + roundoff * (math.hypot(*a) + math.hypot(*b))
+               for a, b in zip(edges, edges[1:] + edges[:1]))
+
+
 def tilt_angle(quad: Quad) -> float:
-    """Angle of the longest edge, normalized to (-90, 90]."""
+    """Small deskew angle, preserving portrait/landscape orientation."""
     pts = order_quad(quad)
     edges = [
         (pts[(i + 1) % 4][0] - pts[i][0], pts[(i + 1) % 4][1] - pts[i][1])
@@ -39,10 +51,10 @@ def tilt_angle(quad: Quad) -> float:
     ]
     dx, dy = max(edges, key=lambda e: e[0] * e[0] + e[1] * e[1])
     angle = math.degrees(math.atan2(dy, dx))
-    while angle > 90.0:
-        angle -= 180.0
-    while angle <= -90.0:
-        angle += 180.0
+    while angle > 45.0:
+        angle -= 90.0
+    while angle <= -45.0:
+        angle += 90.0
     return angle
 
 
