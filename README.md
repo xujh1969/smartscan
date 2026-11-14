@@ -23,12 +23,18 @@
 
 环境：Windows + Python 3.11+（开发验证环境为 Python 3.14）。
 
+**双击启动（推荐）**：直接双击项目根目录的 `run.bat`。首次运行会自动检查并安装依赖（仅首次需要联网），之后直接打开图形界面，不会弹出控制台窗口；不需要记任何命令。
+
+命令行等价方式（也是开发调试入口）：
+
 ```powershell
 git clone https://github.com/xujh1969/smartscan.git
 cd smartscan
 python -m pip install -r requirements.txt
 python run.py
 ```
+
+若程序启动异常，可在命令行执行 `python run.py` 查看报错；`run.bat --smoke` 用于无界面自检。
 
 ### 使用流程
 
@@ -74,6 +80,7 @@ python run.py
 ## 项目结构
 
 ```
+run.bat                      Windows 双击启动（自动检查依赖）
 run.py                       GUI 入口
 requirements.txt             依赖清单
 smartscan/
