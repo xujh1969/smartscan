@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Build / packaging
+build/
+dist/
+*.spec
+
+# IDE / agent local data
+.codebuddy/
+.vscode/
+.idea/
+
+# Local verification artefacts (may contain private photos)
+verify_output/
+verify_index.png
+verify_output_report.json
+
+# Local planning notes (contain machine-specific paths)
+task_plan.md
+findings.md
+progress.md

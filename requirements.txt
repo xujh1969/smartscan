@@ -1,0 +1,6 @@
+# SmartScan 运行与开发依赖（实测环境：Python 3.14 / Windows）
+numpy>=2.0,<3
+opencv-python-headless>=4.10,<5
+Pillow>=11,<13
+PySide6>=6.9,<7
+pytest>=8,<10

@@ -1,0 +1,1 @@
+"""SmartScan test suite."""
