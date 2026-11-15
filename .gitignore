@@ -26,3 +26,7 @@ verify_output_report.json
 task_plan.md
 findings.md
 progress.md
+
+# Local detector experiments (private scans, isolated environment)
+.probe/
+.probe_venv/

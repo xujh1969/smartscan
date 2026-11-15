@@ -7,6 +7,7 @@ import numpy as np
 
 from .boundaries import paper_regions, trim_to_solid_body
 from .geometry import order_quad, quad_bbox, shrink_quad, tilt_angle
+from .gutters import gutter_quads
 from .models import Flags, PhotoQuad
 
 Background = tuple[int, int, int]
@@ -220,7 +221,26 @@ def detect_quads(
     background: Background,
     min_area_ratio: float = 0.01,
 ) -> list[PhotoQuad]:
-    physical = paper_regions(np.asarray(image), background)
+    arr = np.asarray(image)
+    page_area = arr.shape[0] * arr.shape[1]
+    # Tightly tiled album pages defeat the paper-ridge detector: prints almost
+    # fill the sheet and the gutters are too faint for Hough lines. When the
+    # gutter detector finds several reasonably sized prints it is more reliable
+    # than any sheet-sized paper contour, so take it first. Single-photo scans
+    # produce at most one gutter quad and keep the original behaviour.
+    gutters = gutter_quads(arr, background)
+    if len(gutters) >= 3:
+        areas = [(q.bbox()[2] - q.bbox()[0]) * (q.bbox()[3] - q.bbox()[1])
+                 for q in gutters]
+        if float(np.mean(areas)) < 0.25 * page_area:
+            return gutters
+    physical = paper_regions(arr, background)
+    # Even two gutter boxes beat a single sheet-sized paper contour; keep the
+    # paper result only when it actually found more than one print.
+    if len(physical) == 1 and len(gutters) >= 2:
+        x0, y0, x1, y1 = physical[0].bbox()
+        if (x1 - x0) * (y1 - y0) > 0.75 * page_area:
+            return gutters
     if len(physical) > 1 or physical and physical[0].status == "ok":
         arr = np.asarray(image)
         gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY) if arr.ndim == 3 else arr
