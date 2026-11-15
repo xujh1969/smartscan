@@ -19,12 +19,9 @@ class CropBox:
     def __init__(self, canvas, points):
         self.points = points
         self.rotation = 0
+        self.uncertain = False
         self.polygon = QtWidgets.QGraphicsPolygonItem()
         self.polygon.setFlag(QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
-        pen = QtGui.QPen(QtGui.QColor("#00a9e0"), 2)
-        pen.setCosmetic(True)
-        self.polygon.setPen(pen)
-        self.polygon.setBrush(QtGui.QColor(0, 150, 220, 18))
         self.polygon.setZValue(1)
         canvas.addItem(self.polygon)
         self.handles = []
@@ -36,7 +33,20 @@ class CropBox:
             handle.setCursor(QtCore.Qt.CursorShape.SizeAllCursor)
             handle.setZValue(2)
             self.handles.append(handle)
+        self.set_uncertain(False)
         self.update_polygon()
+
+    def set_uncertain(self, value: bool) -> None:
+        """Orange boxes are unconfirmed grid candidates, not verified photos."""
+        self.uncertain = bool(value)
+        colour = (QtGui.QColor("#e8862a") if self.uncertain
+                  else QtGui.QColor("#00a9e0"))
+        pen = QtGui.QPen(colour, 2)
+        pen.setCosmetic(True)
+        self.polygon.setPen(pen)
+        self.polygon.setBrush(
+            QtGui.QColor(colour.red(), colour.green(), colour.blue(), 18)
+        )
 
     def update_polygon(self):
         self.polygon.setPolygon(QtGui.QPolygonF([QtCore.QPointF(*p) for p in self.points]))
@@ -100,6 +110,50 @@ class CropScene(QtWidgets.QGraphicsScene):
         if notify:
             self.edited.emit()
         return item
+
+    def set_grid(self, rows: int, columns: int,
+                 area: tuple[float, float, float, float] | None = None) -> int:
+        """Replace every box with evenly divided, unconfirmed candidates.
+
+        A flatbed scan often holds a regular 2x3 / 3x2 collage whose paper
+        gutters are too faint for automatic detection. Starting from an even
+        grid means the user only has to nudge corners instead of drawing five
+        boxes by hand. ``area`` limits the grid to ``(x0, y0, x1, y1)`` so the
+        detected photo region is divided instead of the whole sheet (which
+        would put a row of blank paper inside the candidates). One history
+        entry keeps the whole operation undoable.
+        """
+        width, height = self.image_size
+        if width < 2 or height < 2:
+            return 0
+        full = (0.0, 0.0, float(width - 1), float(height - 1))
+        if area is None:
+            x0, y0, x1, y1 = full
+        else:
+            ax0, ay0, ax1, ay1 = (float(value) for value in area)
+            x0, x1 = sorted((ax0, ax1))
+            y0, y1 = sorted((ay0, ay1))
+            x0, x1 = max(full[0], x0), min(full[2], x1)
+            y0, y1 = max(full[1], y0), min(full[3], y1)
+            if x1 - x0 < 2 or y1 - y0 < 2:
+                x0, y0, x1, y1 = full
+        rows, columns = max(1, int(rows)), max(1, int(columns))
+        self.set_draw_mode(False)
+        self._history.append(self._snapshot())
+        boxes = []
+        for row in range(rows):
+            top = y0 + (y1 - y0) * row / rows
+            bottom = y0 + (y1 - y0) * (row + 1) / rows
+            for column in range(columns):
+                left = x0 + (x1 - x0) * column / columns
+                right = x0 + (x1 - x0) * (column + 1) / columns
+                boxes.append([(left, top), (right, top), (right, bottom), (left, bottom)])
+        self.set_quads(boxes, reset_history=False)
+        self.clearSelection()
+        for item in self.quad_items:
+            item.set_uncertain(True)
+        self.edited.emit()
+        return len(self.quad_items)
 
     def points(self):
         return [list(item.points) for item in self.quad_items]
@@ -440,6 +494,20 @@ class ReviewDialog(QtWidgets.QDialog):
         self.undo_button = QtWidgets.QPushButton("撤销")
         self.undo_button.setToolTip("撤销上一次裁切框改动（Ctrl+Z）")
         self.add_button.setToolTip("拖动绘制一个新框；Esc 取消绘制")
+        self.grid_rows = QtWidgets.QSpinBox()
+        self.grid_rows.setRange(1, 6)
+        self.grid_rows.setValue(3)
+        self.grid_rows.setPrefix("行 ")
+        self.grid_columns = QtWidgets.QSpinBox()
+        self.grid_columns.setRange(1, 6)
+        self.grid_columns.setValue(2)
+        self.grid_columns.setPrefix("列 ")
+        self.grid_button = QtWidgets.QPushButton("按网格铺框")
+        for widget in (self.grid_rows, self.grid_columns, self.grid_button):
+            widget.setToolTip(
+                "按行列等分照片区域（默认取已有框的外接范围，无框时等分整张扫描图），"
+                "生成待确认的候选框；再拖动四角对齐照片、删除多余框。Ctrl+Z 可整步撤销"
+            )
         self.view.setToolTip("滚轮缩放；按住空格拖动平移，松开恢复编辑")
         fit = QtWidgets.QPushButton("适应窗口")
         self.previous_button = QtWidgets.QPushButton("<", self.view)
@@ -460,13 +528,17 @@ class ReviewDialog(QtWidgets.QDialog):
         self.export_button = QtWidgets.QPushButton()
         self.return_button = QtWidgets.QPushButton("返回选择扫描图")
         self.return_button.setToolTip("返回主界面添加更多扫描图；实际编辑会自动保存")
-        for button in (self.add_button, self.delete_button, self.undo_button, fit, self.previous_button,
-                       self.next_button, self.save_button, self.export_button, self.return_button):
+        for button in (self.add_button, self.delete_button, self.undo_button, self.grid_button,
+                       fit, self.previous_button, self.next_button, self.save_button,
+                       self.export_button, self.return_button):
             button.setAutoDefault(False)
         tools = QtWidgets.QHBoxLayout()
         tools.addWidget(self.add_button)
         tools.addWidget(self.delete_button)
         tools.addWidget(self.undo_button)
+        tools.addWidget(self.grid_rows)
+        tools.addWidget(self.grid_columns)
+        tools.addWidget(self.grid_button)
         tools.addWidget(fit)
         tools.addStretch()
         bottom = QtWidgets.QHBoxLayout()
@@ -488,6 +560,7 @@ class ReviewDialog(QtWidgets.QDialog):
         self.add_button.toggled.connect(self._drawing_mode)
         self.delete_button.clicked.connect(self.scene.remove_selected)
         self.undo_button.clicked.connect(self.scene.undo)
+        self.grid_button.clicked.connect(self._apply_grid)
         fit.clicked.connect(self.view.fit_image)
         self.previous_button.clicked.connect(lambda: self._navigate(-1))
         self.next_button.clicked.connect(self.next_source)
@@ -563,6 +636,9 @@ class ReviewDialog(QtWidgets.QDialog):
         self.add_button.setEnabled(enabled)
         self.delete_button.setEnabled(enabled and bool(self.scene.selectedItems()))
         self.undo_button.setEnabled(enabled and bool(self.scene._history))
+        self.grid_rows.setEnabled(enabled)
+        self.grid_columns.setEnabled(enabled)
+        self.grid_button.setEnabled(enabled)
         self.undo_shortcut.setEnabled(enabled)
         self.save_button.setEnabled(enabled)
         self.previous_button.setEnabled(not self.busy and self.index > 0)
@@ -661,6 +737,22 @@ class ReviewDialog(QtWidgets.QDialog):
         if checked:
             self.view.setFocus(QtCore.Qt.FocusReason.OtherFocusReason)
 
+    def _apply_grid(self):
+        if self.busy or not self.current_valid:
+            return
+        rows, columns = self.grid_rows.value(), self.grid_columns.value()
+        points = [point for box in self.scene.points() for point in box]
+        area = None
+        if points:
+            area = (min(p[0] for p in points), min(p[1] for p in points),
+                    max(p[0] for p in points), max(p[1] for p in points))
+        count = self.scene.set_grid(rows, columns, area=area)
+        self.status.setText(
+            f"已按 {rows} 行 × {columns} 列在照片区域铺出 {count} 个等分候选框（未确认）："
+            "橙色框需逐张拖动四角对齐照片、删除多余框，确认后点“保存本张”。"
+            "Ctrl+Z 可整步撤销。"
+        )
+
     def eventFilter(self, watched, event):
         if self._disposed or not isinstance(watched, QtWidgets.QWidget):
             return False
@@ -731,6 +823,8 @@ class ReviewDialog(QtWidgets.QDialog):
             return False
         self.confirmed.add(self.sources[self.index])
         self.dirty = self.user_edited = False
+        for item in self.scene.quad_items:
+            item.set_uncertain(False)
         self.status.setText(f"已保存 {len(self.scene.points())} 个框，可继续下一张或批量裁切。")
         self._controls()
         return True
